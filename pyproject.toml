@@ -30,6 +30,13 @@ test = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_harness_protocol"]
 
+[tool.hatch.build.targets.sdist]
+# Adapters are separate distributions; keep their sources and notes out of the core sdist.
+exclude = [
+  "/implementations",
+  "/docs/langgraph-*.md",
+]
+
 [tool.pytest.ini_options]
 addopts = "-ra"
 asyncio_mode = "auto"
