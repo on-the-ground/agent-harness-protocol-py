@@ -16,7 +16,7 @@ rest at admission instead of simulating it.
 python -m pip install agent-harness-protocol-langgraph
 ```
 
-Requirements: Python 3.11+, `langchain-core>=1.2,<2`, `langgraph>=1.1,<2`.
+Requirements: Python 3.11+, `langchain-core>=1.2.8,<2`, `langgraph>=1.1,<2`.
 
 ## Minimal example
 
@@ -153,12 +153,14 @@ Bound shared suites:
 Suites for interactions, approval scope, persistence, workspace, and execution
 constraints are not bound because this graph has no such route; the requirements suite
 verifies that those requirements are rejected. The full list, including suites not bound
-yet, is in [the conformance guide](../../docs/conformance.md#current-adapter-bindings).
+yet, is in [the conformance guide](https://github.com/on-the-ground/agent-harness-protocol-py/blob/main/docs/conformance.md#current-adapter-bindings).
+
+From `implementations/langgraph` in a repository checkout:
 
 ```bash
-python -m pip install -e ../..[test] -e .[test]
+python -m pip install -e "../..[test]" -e ".[test]"
 python -m pytest
 ```
 
 Design decisions are recorded in
-[`docs/langgraph-adapter-design.md`](../../docs/langgraph-adapter-design.md).
+[`docs/langgraph-adapter-design.md`](https://github.com/on-the-ground/agent-harness-protocol-py/blob/main/docs/langgraph-adapter-design.md).

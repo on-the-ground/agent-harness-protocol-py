@@ -93,10 +93,14 @@ def _runtime_harness(boundary: RuntimeObservation) -> AgentHarness:
 
 
 class TestLangGraphRuntime(RuntimeProfileConformanceTests):
+    """Runtime suite against the real graph."""
+
     def boundary(self) -> FixtureResource[RuntimeObservation]:
+        """Provide a fresh model boundary."""
         return _boundary()
 
     def harness(self, boundary: RuntimeObservation) -> AgentHarness:
+        """Build the harness under test."""
         return _runtime_harness(boundary)
 
 
@@ -125,17 +129,26 @@ async def _cleanup_fixture(
 
 
 class TestLangGraphCleanupConfirmedCancellation(CleanupBudgetConformanceTests):
+    """Cleanup suite with confirmed coroutine cancellation."""
+
     def cleanup_fixture(self) -> FixtureResource[AcceptanceFixture]:
+        """Provide the cleanup fixture for this configuration."""
         return _cleanup_fixture(CONFIRMED, ignore_cancellation=False)
 
 
 class TestLangGraphCleanupUnconfirmedCancellation(CleanupBudgetConformanceTests):
+    """Cleanup suite with the default unconfirmed cancellation."""
+
     def cleanup_fixture(self) -> FixtureResource[AcceptanceFixture]:
+        """Provide the cleanup fixture for this configuration."""
         return _cleanup_fixture(CancellationSemantics.UNCONFIRMED, ignore_cancellation=False)
 
 
 class TestLangGraphCleanupWithModelIgnoringCancellation(CleanupBudgetConformanceTests):
+    """Cleanup suite with a model that keeps running after cancellation."""
+
     def cleanup_fixture(self) -> FixtureResource[AcceptanceFixture]:
+        """Provide the cleanup fixture for this configuration."""
         return _cleanup_fixture(CONFIRMED, ignore_cancellation=True)
 
 
@@ -366,5 +379,8 @@ async def _requirements_fixture() -> AsyncGenerator[RuntimeRequirementsFixture, 
 
 
 class TestLangGraphRequirements(RequirementsConformanceTests):
+    """Requirements suite over four disposition profiles."""
+
     def requirement_fixture(self) -> FixtureResource[RuntimeRequirementsFixture]:
+        """Provide the profile fixture."""
         return _requirements_fixture()

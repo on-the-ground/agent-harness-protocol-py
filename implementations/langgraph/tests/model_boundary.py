@@ -19,6 +19,15 @@ from pydantic import PrivateAttr
 
 
 class ControlledChatModel(BaseChatModel):
+    """Chat model whose calls can be held, observed, failed, or made to ignore cancel.
+
+    Attributes:
+        reply: Text of every AI reply.
+        usage: Usage metadata attached to every reply.
+        failure: When set, every call raises ``RuntimeError`` with this message.
+        ignore_cancellation: Keep waiting for release after the first cancellation.
+    """
+
     reply: str = "native-result"
     usage: UsageMetadata | None = None
     failure: str | None = None
@@ -31,6 +40,7 @@ class ControlledChatModel(BaseChatModel):
     _gate: asyncio.Event = PrivateAttr(default_factory=asyncio.Event)
 
     def model_post_init(self, context: Any, /) -> None:
+        """Start released."""
         self._gate.set()
 
     @property
@@ -39,24 +49,30 @@ class ControlledChatModel(BaseChatModel):
 
     @property
     def calls(self) -> Sequence[Sequence[BaseMessage]]:
+        """Messages of every call, in order."""
         return tuple(tuple(call) for call in self._calls)
 
     @property
     def cancellations(self) -> int:
+        """Number of calls that observed cancellation."""
         return self._cancellations
 
     @property
     def completed(self) -> int:
+        """Number of calls that produced a reply."""
         return self._completed
 
     @property
     def in_flight(self) -> int:
+        """Number of calls that have not returned yet."""
         return self._in_flight
 
     def hold(self) -> None:
+        """Make subsequent and waiting calls block until `release`."""
         self._gate.clear()
 
     def release(self) -> None:
+        """Let held calls continue."""
         self._gate.set()
 
     def _generate(
@@ -95,6 +111,7 @@ class ControlledChatModel(BaseChatModel):
 
 
 def contents(messages: Sequence[BaseMessage]) -> list[str]:
+    """Text of each message."""
     return [message.text for message in messages]
 
 
@@ -102,27 +119,40 @@ class ModelBoundaryObservation:
     """``RuntimeObservation`` read from what the controlled model actually received."""
 
     def __init__(self, model: ControlledChatModel) -> None:
+        """Observe ``model``."""
         self.model = model
 
     @property
     def observed_contexts(self) -> Sequence[str]:
+        """One newline-joined context per model call."""
         return tuple("\n".join(contents(call)) for call in self.model.calls)
 
     @property
     def observed_text_values(self) -> Sequence[str]:
+        """Every message text the model received."""
         return tuple(text for call in self.model.calls for text in contents(call))
 
     def hold(self) -> None:
+        """Hold model calls."""
         self.model.hold()
 
     def release(self) -> None:
+        """Release held model calls."""
         self.model.release()
 
     async def settle(self, timeout: float = 5.0) -> None:
-        """Release held calls and wait until no native model call is still running."""
+        """Release held calls and wait until the graph runs they belong to have ended.
+
+        A graph run may outlive its settled task, for example when the model ignored
+        cancellation. Waiting for the remaining event-loop tasks keeps such runs from
+        being destroyed mid-flight when the test's loop closes.
+        """
         self.model.release()
         async with asyncio.timeout(timeout):
             while self.model.in_flight:
                 await asyncio.sleep(0.005)
-        for _ in range(3):
-            await asyncio.sleep(0)
+            current = asyncio.current_task()
+            while pending := [
+                task for task in asyncio.all_tasks() if task is not current and not task.done()
+            ]:
+                await asyncio.wait(pending, timeout=0.05)

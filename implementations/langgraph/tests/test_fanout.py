@@ -1,3 +1,5 @@
+"""Loss accounting and ordering of the bounded event fan-out."""
+
 from __future__ import annotations
 
 import asyncio

@@ -1,3 +1,10 @@
+"""LangChain + LangGraph implementation of the Agent Harness Protocol port.
+
+`LangGraphHarness` runs a LangChain chat model inside a ``START -> model -> END``
+LangGraph graph, one checkpoint thread per AHP session. Requirements the graph cannot
+keep are rejected at admission; see the package README for the support matrix.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -81,7 +88,16 @@ PROVIDER = ProviderId("langchain-langgraph")
 
 
 class CancellationSemantics(StrEnum):
-    """What cancellation of the model coroutine proves at the configured boundary."""
+    """What cancellation of the model coroutine proves at the configured boundary.
+
+    Attributes:
+        UNCONFIRMED: Coroutine termination is no evidence that the model provider
+            stopped working. Cancelling a model call yields ``Unresolved``. This is the
+            default and the right choice for remote providers.
+        COROUTINE_TERMINATION_CONFIRMS_WORK_STOPPED: The model coroutine is the whole
+            native work, for example an in-process model, so its termination yields
+            ``Cancelled``.
+    """
 
     UNCONFIRMED = "unconfirmed"
     COROUTINE_TERMINATION_CONFIRMS_WORK_STOPPED = "coroutine_termination_confirms_work_stopped"
@@ -91,9 +107,18 @@ class CheckpointCleanupError(RuntimeError):
     """Deleting a released session's LangGraph checkpoints failed or exceeded its budget.
 
     Task outcomes and closed handles are unaffected; only the stored context may remain.
+
+    Attributes:
+        failures: The deletion failure, or ``TimeoutError``, for each released session
+            whose checkpoint thread may still exist.
     """
 
     def __init__(self, failures: Mapping[SessionId, BaseException]) -> None:
+        """Create the error.
+
+        Args:
+            failures: The failure for each session whose checkpoint thread was not deleted.
+        """
         self.failures: Mapping[SessionId, BaseException] = dict(failures)
         detail = "; ".join(
             f"{session_id.value}: {type(error).__name__}: {error}"
@@ -110,6 +135,7 @@ _DEFAULT_BUDGET = CleanupBudget(
 
 
 def _declared_support(declared: object, satisfies: object, capability: str) -> Support:
+    """Map a declared disposition to discovery information for one capability."""
     if declared == satisfies:
         return SUPPORTED
     if declared in {ContextRetentionDisposition.UNKNOWN, UserHistoryVisibility.UNKNOWN}:
@@ -121,6 +147,7 @@ def _declared_support(declared: object, satisfies: object, capability: str) -> S
 
 
 def _declared_issue(path: str, declared: object, requirement: object) -> CompatibilityIssue:
+    """Explain why a declared disposition cannot satisfy a requirement."""
     if declared in {ContextRetentionDisposition.UNKNOWN, UserHistoryVisibility.UNKNOWN}:
         return CompatibilityIssue(
             path,
@@ -133,6 +160,7 @@ def _declared_issue(path: str, declared: object, requirement: object) -> Compati
 def _support_report(
     retention: ContextRetentionDisposition, visibility: UserHistoryVisibility
 ) -> SupportReport:
+    """Build the support report for the given declared dispositions."""
     return SupportReport(
         {
             Capability.CALLER_APPROVAL: Unsupported(
@@ -186,6 +214,7 @@ class _Runtime:
     closed: bool = False
 
     def spawn_background(self, work: Coroutine[Any, Any, None]) -> None:
+        """Run detached cleanup work; its failure is observed but has no report path."""
         task = asyncio.create_task(work)
         self.background.add(task)
         task.add_done_callback(self.background.discard)
@@ -221,6 +250,32 @@ class LangGraphHarness(AgentHarness):
         context_retention: ContextRetentionDisposition | None = None,
         history_visibility: UserHistoryVisibility = UserHistoryVisibility.UNKNOWN,
     ) -> None:
+        """Configure a harness around one chat model.
+
+        Args:
+            model: The LangChain chat model called by every session's model node.
+            model_id: The model identity admitted for ``SessionSpec.model``. Without it,
+                any explicit model request is rejected.
+            checkpointer: The LangGraph checkpointer holding session threads. When omitted,
+                the harness owns an in-memory saver and reports ``EPHEMERAL`` retention.
+            cancellation_semantics: What coroutine termination proves about the model
+                provider. See `CancellationSemantics`.
+            cleanup_budget: Upper bounds for settling tasks and deleting threads during
+                ``release()`` and ``aclose()``.
+            event_buffer_capacity: Entries buffered per semantic-event subscription,
+                including gap markers.
+            diagnostic_buffer_capacity: Entries buffered per diagnostic subscription,
+                including gap markers.
+            context_retention: The declared retention of a supplied ``checkpointer``.
+                Defaults to ``UNKNOWN`` for a supplied checkpointer and to ``EPHEMERAL``
+                for the adapter-owned one.
+            history_visibility: Whether inputs stay hidden outside the application, for
+                example from provider logs and tracing. Defaults to ``UNKNOWN``.
+
+        Raises:
+            ValueError: If a buffer capacity is below two, or if a retention other than
+                ``EPHEMERAL`` is declared for the adapter-owned checkpointer.
+        """
         if checkpointer is None:
             if context_retention not in {None, ContextRetentionDisposition.EPHEMERAL}:
                 raise ValueError("the adapter-owned in-memory checkpointer is ephemeral")
@@ -243,18 +298,34 @@ class LangGraphHarness(AgentHarness):
 
     @property
     def provider(self) -> ProviderId:
+        """The provider identity reported by this adapter."""
         return PROVIDER
 
     @property
     def support(self) -> SupportReport:
+        """Capability discovery for this graph and the declared dispositions.
+
+        Discovery is informational; `validate` and admission decide each request.
+        """
         disposition = self._runtime.disposition
         return _support_report(disposition.retention, disposition.history_visibility)
 
     @property
     def cleanup_budget(self) -> CleanupBudget:
+        """Upper bounds honoured by ``session.release()`` and `aclose`."""
         return self._runtime.cleanup_budget
 
     def validate(self, spec: SessionSpec) -> CompatibilityReport:
+        """Diagnose a session spec without calling the model.
+
+        Args:
+            spec: The requested session configuration and guarantees.
+
+        Returns:
+            ``INCOMPATIBLE`` for requirements this graph cannot keep, ``UNCONFIRMED`` for
+            requirements that depend on an undeclared disposition, otherwise
+            ``COMPATIBLE``.
+        """
         issues: list[CompatibilityIssue] = []
         requirements = spec.requirements
         if spec.model is not None and spec.model != self._model_id:
@@ -345,6 +416,19 @@ class LangGraphHarness(AgentHarness):
         return CompatibilityReport(issues)
 
     async def create_session(self, spec: SessionSpec) -> AgentSession:
+        """Admit a spec and create a session with its own checkpoint thread.
+
+        Args:
+            spec: The requested session configuration and guarantees.
+
+        Returns:
+            A new session whose sequential tasks share one conversation.
+
+        Raises:
+            RuntimeError: If the harness is closed.
+            IncompatibleRequirementError: If a requirement cannot be kept.
+            RequirementUnconfirmedError: If a requirement cannot be confirmed.
+        """
         if self._runtime.closed:
             raise RuntimeError("harness is closed")
         self.validate(spec).require_compatible()
@@ -355,8 +439,11 @@ class LangGraphHarness(AgentHarness):
     async def aclose(self) -> None:
         """Release every session within ``cleanup_budget.total``.
 
-        Raises :class:`CheckpointCleanupError` when stored context could not be deleted.
-        Every task is still settled and every handle is still closed in that case.
+        Idempotent. Cancelling the caller does not interrupt the cleanup.
+
+        Raises:
+            CheckpointCleanupError: If stored context could not be deleted. Every task
+                is still settled and every handle is still closed in that case.
         """
         if self._close_task is None:
             self._runtime.closed = True
@@ -365,6 +452,7 @@ class LangGraphHarness(AgentHarness):
         await asyncio.shield(self._close_task)
 
     async def _close_all(self) -> None:
+        """Release all sessions concurrently and force the ones exceeding the budget."""
         sessions = tuple(self._runtime.sessions)
         if not sessions:
             return
@@ -387,6 +475,8 @@ class LangGraphHarness(AgentHarness):
 
 
 class _LangGraphSession(AgentSession):
+    """One AHP session backed by one LangGraph checkpoint thread."""
+
     def __init__(self, runtime: _Runtime, spec: SessionSpec) -> None:
         self.runtime = runtime
         self._id = SessionId(uuid4().hex)
@@ -401,6 +491,7 @@ class _LangGraphSession(AgentSession):
         self.graph = ModelOnlyGraph(self._call_model, runtime.checkpointer)
 
     async def _call_model(self, history: Sequence[BaseMessage]) -> BaseMessage:
+        """Model node body: prepend the session instructions and call the chat model."""
         running = self._running
         if running is not None:
             running.mark_model_called()
@@ -411,21 +502,26 @@ class _LangGraphSession(AgentSession):
 
     @property
     def id(self) -> SessionId:
+        """Adapter-local session identifier."""
         return self._id
 
     @property
     def spec(self) -> SessionSpec:
+        """The admitted session spec."""
         return self._spec
 
     @property
     def disposition(self) -> SessionDisposition:
+        """Retention and visibility as declared to the harness."""
         return self.runtime.disposition
 
     @property
     def persistent_ref(self) -> None:
+        """Always ``None``: this adapter does not offer persistent sessions."""
         return None
 
     def validate(self, request: TaskRequest) -> CompatibilityReport:
+        """Diagnose a task request; only text input with text output is compatible."""
         issues: list[CompatibilityIssue] = []
         if not isinstance(request.input, TextInput):
             issues.append(
@@ -441,6 +537,14 @@ class _LangGraphSession(AgentSession):
         return CompatibilityReport(issues)
 
     async def start_task(self, request: TaskRequest) -> AgentTask:
+        """Admit a request and start its graph run without waiting for completion.
+
+        Raises:
+            SessionBlockedError: If the session was released, or a previous graph run
+                that outlived its settled task is still running.
+            RuntimeError: If another task of this session is still running.
+            IncompatibleRequirementError: If the request cannot be served.
+        """
         if self._closed or self.runtime.closed:
             raise SessionBlockedError(self.id, "session has been released")
         running = self._running
@@ -460,6 +564,14 @@ class _LangGraphSession(AgentSession):
         return task
 
     async def release(self) -> None:
+        """Idempotently release the session within the harness cleanup budget.
+
+        Active work is cancelled, then the checkpoint thread is deleted. Cancelling the
+        caller does not interrupt the release.
+
+        Raises:
+            CheckpointCleanupError: If the checkpoint thread could not be deleted.
+        """
         if self._release_task is None:
             self._closed = True
             self._release_task = asyncio.create_task(self._release())
@@ -467,6 +579,7 @@ class _LangGraphSession(AgentSession):
         await asyncio.shield(self._release_task)
 
     async def _release(self) -> None:
+        """Stop the running task, delete the thread, and detach from the harness."""
         loop = asyncio.get_running_loop()
         started = loop.time()
         budget = self.runtime.cleanup_budget
@@ -498,6 +611,7 @@ class _LangGraphSession(AgentSession):
         )
 
     def force_unresolved_cleanup(self) -> None:
+        """Close the session and settle its running task after the total budget expired."""
         self._closed = True
         running = self._running
         if running is not None:
@@ -507,18 +621,23 @@ class _LangGraphSession(AgentSession):
             )
 
     def projected_usage(self, task_usage: AgentUsage) -> AgentUsage:
+        """Session usage if ``task_usage`` were committed now."""
         return self._usage + task_usage
 
     def commit_usage(self, task_usage: AgentUsage) -> AgentUsage:
+        """Add one settled task's usage exactly once and return the session total."""
         self._usage = self._usage + task_usage
         return self._usage
 
     def graph_run_ended(self, task: _LangGraphTask) -> None:
+        """Unblock the session once the given task's graph run has really ended."""
         if self._running is task:
             self._running = None
 
 
 class _LangGraphTask(AgentTask, TaskDiagnostics):
+    """One delegated task, executed as one graph run on the session thread."""
+
     def __init__(self, session: _LangGraphSession, text: TextInput) -> None:
         self._session = session
         self._text = text
@@ -541,30 +660,46 @@ class _LangGraphTask(AgentTask, TaskDiagnostics):
 
     @property
     def id(self) -> TaskId:
+        """Adapter-local task identifier."""
         return self._id
 
     @property
     def session_id(self) -> SessionId:
+        """Identifier of the owning session."""
         return self._session.id
 
     @property
     def state(self) -> TaskState:
+        """Current lifecycle snapshot."""
         return self._state
 
     def events(self) -> AsyncIterator[TaskEvent]:
+        """Open a bounded semantic-event subscription registered immediately."""
         return self._events.subscribe()
 
     def diagnostics(self) -> AsyncIterator[DiagnosticEvent]:
+        """Open a bounded subscription to graph start and terminal diagnostics."""
         return self._diagnostics.subscribe()
 
     @property
     def pending_interactions(self) -> tuple[InteractionRequest, ...]:
+        """Always empty: this graph has no approval or question route."""
         return ()
 
     async def respond(self, interaction_id: InteractionId, response: InteractionResponse) -> None:
+        """Reject every response because this graph never requests an interaction.
+
+        Raises:
+            ValueError: Always.
+        """
         raise ValueError(f"task has no pending interaction: {interaction_id}")
 
     async def request_cancellation(self) -> None:
+        """Cancel the graph run and wait at most ``cleanup_budget.per_task``.
+
+        Returns once the task is settled. If the run does not end in time, the task is
+        settled as ``Unresolved`` and the session stays blocked until the run ends.
+        """
         if self._outcome.done():
             return
         await self.stop(
@@ -573,19 +708,23 @@ class _LangGraphTask(AgentTask, TaskDiagnostics):
         )
 
     async def await_outcome(self) -> TaskOutcome:
+        """Return the stable terminal outcome; cancelling the waiter leaves the task running."""
         return await asyncio.shield(self._outcome)
 
     # Adapter-internal protocol used by the session.
 
     def start(self) -> None:
+        """Start the graph run in a background task."""
         worker = asyncio.create_task(self._run())
         self._worker = worker
         worker.add_done_callback(self._graph_run_ended)
 
     def mark_model_called(self) -> None:
+        """Record that the model boundary was reached, which makes cancellation uncertain."""
         self._model_called = True
 
     def when_graph_run_ends(self, callback: Callable[[], None]) -> None:
+        """Call ``callback`` once the graph run has ended, immediately if it already has."""
         worker = self._worker
         if worker is None or worker.done():
             callback()
@@ -608,6 +747,7 @@ class _LangGraphTask(AgentTask, TaskDiagnostics):
             )
 
     def force_unresolved(self, reason: UnresolvedReason, known: str) -> None:
+        """Settle as ``Unresolved`` now while the graph run may still be running."""
         self._cancel_graph_run()
         self._settle(Unresolved(self.id, reason, known, usage=self._usage_so_far()))
 
@@ -620,6 +760,7 @@ class _LangGraphTask(AgentTask, TaskDiagnostics):
         worker.cancel()
 
     async def _run(self) -> TaskOutcome:
+        """Execute one graph turn and translate the final AI message into events."""
         self._state = TaskState.RUNNING
         self._events.publish(TaskStarted(self.id))
         self._diagnostics.publish(self._diagnostic("graph_started", {"node": "model"}))
@@ -638,6 +779,7 @@ class _LangGraphTask(AgentTask, TaskDiagnostics):
         return Completed(self.id, _stop_reason(response), TextOutput(text), usage)
 
     def _graph_run_ended(self, worker: asyncio.Task[TaskOutcome]) -> None:
+        """Settle from the finished graph run unless a forced judgment came first."""
         self._session.graph_run_ended(self)
         if self._outcome.done():
             _retrieve_result(worker)
@@ -659,6 +801,7 @@ class _LangGraphTask(AgentTask, TaskDiagnostics):
         self._settle(outcome)
 
     def _cancellation_outcome(self) -> TaskOutcome:
+        """Judge a cancelled graph run by whether the model was reached and the semantics."""
         usage = self._usage_so_far()
         semantics = self._session.runtime.cancellation_semantics
         if (
@@ -674,11 +817,13 @@ class _LangGraphTask(AgentTask, TaskDiagnostics):
         )
 
     def _usage_so_far(self) -> AgentUsage:
+        """Observed usage, measured zero before the model call, otherwise unknown."""
         if self._observed_usage is not None:
             return self._observed_usage
         return AgentUsage.UNKNOWN if self._model_called else AgentUsage.ZERO
 
     def _settle(self, outcome: TaskOutcome) -> None:
+        """Fix the terminal outcome once, commit session usage, and close the streams."""
         if self._outcome.done():
             return
         session_usage = self._session.commit_usage(outcome.usage)
@@ -705,10 +850,12 @@ class _LangGraphTask(AgentTask, TaskDiagnostics):
         self._outcome.set_result(final)
 
     def _diagnostic(self, name: str, payload: Mapping[str, str]) -> ProviderDiagnostic:
+        """Build a provider diagnostic with a JSON payload."""
         return ProviderDiagnostic(self.id, PROVIDER, name, json.dumps(payload, sort_keys=True))
 
 
 def _message_text(message: AIMessage) -> str:
+    """Concatenate the text content of an AI message, ignoring non-text blocks."""
     content = message.content
     if isinstance(content, str):
         return content
@@ -724,6 +871,7 @@ def _message_text(message: AIMessage) -> str:
 
 
 def _usage(message: AIMessage) -> AgentUsage:
+    """Translate LangChain usage metadata, keeping missing fields unknown."""
     metadata = message.usage_metadata
     if metadata is None:
         return AgentUsage.UNKNOWN
@@ -740,6 +888,7 @@ def _usage(message: AIMessage) -> AgentUsage:
 
 
 def _stop_reason(message: AIMessage) -> StopReason:
+    """Map the provider finish reason; an unrecognised reason is ``PROVIDER_STOPPED``."""
     raw = message.response_metadata.get("finish_reason")
     if raw in {"stop", "end_turn", "completed"}:
         return StopReason.FINISHED

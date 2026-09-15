@@ -54,6 +54,7 @@ class FaultySaver(InMemorySaver):
     """A real in-memory checkpointer whose thread deletion can fail or stall."""
 
     def __init__(self) -> None:
+        """Start with deletion succeeding."""
         # InMemorySaver.__init__ exposes a partially typed ``factory`` parameter.
         super().__init__()  # pyright: ignore[reportUnknownMemberType]
         self.failure: Exception | None = None
@@ -61,6 +62,7 @@ class FaultySaver(InMemorySaver):
         self.deleted: list[str] = []
 
     async def adelete_thread(self, thread_id: str) -> None:
+        """Stall or fail when configured, otherwise delete and record the thread."""
         if self.stall:
             await asyncio.sleep(60)
         if self.failure is not None:

@@ -148,7 +148,7 @@ cleanup, persistence, execution bounds, workspace/skills, output, accounting, an
 observation load. The requirements scenario expands every declared profile and case
 in both preflight and direct-admission modes.
 
-See [the protocol mapping](docs/protocol.md) and
-[conformance guide](docs/conformance.md) before binding an adapter. A complete binding
+See [the protocol mapping](https://github.com/on-the-ground/agent-harness-protocol-py/blob/main/docs/protocol.md) and
+[conformance guide](https://github.com/on-the-ground/agent-harness-protocol-py/blob/main/docs/conformance.md) before binding an adapter. A complete binding
 against a real runtime is in
-[`implementations/langgraph/tests/test_conformance.py`](implementations/langgraph/tests/test_conformance.py).
+[`implementations/langgraph/tests/test_conformance.py`](https://github.com/on-the-ground/agent-harness-protocol-py/blob/main/implementations/langgraph/tests/test_conformance.py).

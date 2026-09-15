@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.26"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -8,22 +8,34 @@ version = "0.2.3"
 description = "LangChain and LangGraph adapter for Agent Harness Protocol"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "Joohyung Park" }]
+keywords = ["agent", "agent-harness", "llm", "langchain", "langgraph", "asyncio"]
 classifiers = [
   "Development Status :: 3 - Alpha",
-  "License :: OSI Approved :: Apache Software License",
+  "Framework :: AsyncIO",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
   "Typing :: Typed",
 ]
 dependencies = [
   "agent-harness-protocol==0.2.3",
-  "langchain-core>=1.2,<2",
+  "langchain-core>=1.2.8,<2",
   "langgraph>=1.1,<2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/on-the-ground/agent-harness-protocol-py/tree/main/implementations/langgraph"
+Source = "https://github.com/on-the-ground/agent-harness-protocol-py/tree/main/implementations/langgraph"
+Issues = "https://github.com/on-the-ground/agent-harness-protocol-py/issues"
+Documentation = "https://github.com/on-the-ground/agent-harness-protocol-py/blob/main/implementations/langgraph/README.md"
 
 [project.optional-dependencies]
 test = [
@@ -46,10 +58,15 @@ target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "**/__init__.py" = ["F401"]
+# Test names describe the scenario; test functions need no docstring.
+"tests/test_*.py" = ["D103"]
 
 [tool.pyright]
 pythonVersion = "3.11"
