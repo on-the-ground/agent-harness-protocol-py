@@ -34,3 +34,27 @@ Important timing rules:
 - start and response acknowledgement loss must retain the submitted identity and
   prevent automatic duplicate delivery.
 
+## Current adapter bindings
+
+This section records which suites existing adapters actually bind. It does not relax
+any rule above; an unbound suite means the adapter has no such route and rejects the
+corresponding requirement at admission.
+
+### LangChain + LangGraph (`implementations/langgraph`)
+
+Fixture seam: a controllable LangChain `BaseChatModel` replaces only the model. The
+harness, compiled `StateGraph`, and checkpointer are real, and `RuntimeObservation` is
+read from the messages the model received.
+
+| Suite | Status |
+|---|---|
+| `RuntimeProfileConformanceTests` | bound; the fixture selects confirmed coroutine cancellation because the controlled model's coroutine is the whole native work |
+| `RequirementsConformanceTests` | bound with four disposition profiles |
+| `CleanupBudgetConformanceTests` | bound with confirmed, unconfirmed, and cancellation-ignoring models |
+| `InteractionConformanceTests`, `ApprovalScopeConformanceTests`, `ResponseAcceptanceConformanceTests` | not bound: no approval or question route |
+| `StartAcceptanceConformanceTests` | not bound: the in-process graph has no delivery boundary where acknowledgement can be lost |
+| `RuntimePersistenceConformanceTests`, `PersistenceFailureConformanceTests`, `ContextConformanceTests` | not bound: persistence and reopening are unsupported |
+| `WorkspaceConformanceTests`, `ExecutionConstraintConformanceTests` | not bound: workspace and execution constraints are unsupported |
+| `LifecycleConformanceTests` | not bound: its controls must feed a native notification ingestion path, which this graph does not have |
+| `ObservationLoadConformanceTests` | not bound yet: no `MessageDelta` stream |
+| `AcceptedStartConformanceTests`, `OutcomeConformanceTests`, `AccountingConformanceTests`, `AccountingSequenceConformanceTests` | not bound yet |
