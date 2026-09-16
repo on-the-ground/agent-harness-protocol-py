@@ -170,7 +170,7 @@ def _support_report(
                 "this model-only graph has no caller question interaction route"
             ),
             Capability.PERSISTENCE: Unsupported(
-                "the bundled in-memory checkpointer does not survive harness recreation"
+                "this adapter exposes no persistent session reference or reopen operation"
             ),
             Capability.WORKSPACE: Unsupported(
                 "this model-only graph does not establish a workspace"
